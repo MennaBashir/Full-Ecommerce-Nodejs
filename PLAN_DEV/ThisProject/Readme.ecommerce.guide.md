@@ -1,235 +1,181 @@
-# 🛒 دليل بناء E-commerce Backend (Node.js + Express + Mongoose)
+# E-commerce Backend — المرجع
 
-> تطبيق عملي للدليل العام. اتبعي نفس الخطوات بالترتيب.
+> Node.js + Express + Mongoose
 
 ---
 
-## 1) فهم المشروع
+## 1) المستخدمين
 
-**المشكلة:** موقع يعرض منتجات، والعميل يشتري، والأدمن يدير.
-
-**المستخدمين:**
-
-| النوع | بيعمل إيه |
+| Role | الصلاحيات |
 |---|---|
-| **Guest** | يتصفح المنتجات ويبحث |
-| **Customer** | يسجل دخول، كارت، أوردرات، reviews، wishlist |
-| **Admin** | يدير المنتجات والتصنيفات والأوردرات والكوبونات |
-| **Vendor** *(اختياري)* | يدير منتجاته هو بس |
+| Guest | تصفح + بحث |
+| Customer | Auth، Cart، Orders، Reviews، Wishlist |
+| Admin | إدارة Products / Categories / Brands / Orders / Coupons |
 
 ---
 
 ## 2) الـ Scope
 
-| ✅ Must (MVP) | 🟡 Should | ⏳ Later |
+| Must (MVP) | Should | Later |
 |---|---|---|
 | Auth + Roles | Reviews | Shipment |
 | Category | Wishlist | Return / Refund |
 | Product + Variant | Coupon | Notifications |
-| Cart | Payment حقيقي | Multi-vendor |
-| Order | Brand | Warehouse |
-| | رفع الصور | Banners / Settings |
+| Cart | Brand | Multi-vendor |
+| Order | رفع الصور | Warehouse |
+| Payment (COD) | Payment gateway | Redis / Elasticsearch |
+| | Forgot / change password | |
+| | Admin: إدارة المستخدمين | |
 
 ---
 
-## 3) الـ Models والعلاقات
+## 3) العلاقات
 
 ```
-User ──< Address            (embedded)
-User ──1 Cart
-User ──< Order ──< OrderItem (embedded)
-Order ──< Payment
-Category ──< Category       (self-reference: parent)
-Category ──< Product ──< Variant
-Product ──< Review >── User
-User ──1 Wishlist ──< Product
-Coupon                      (مستقل، الأوردر يشاور عليه)
+User     ──< Address        (embed)
+User     ──< Product        (wishlist: array of refs في User)
+User     ──1 Cart
+User     ──< Order ──< OrderItem  (embed + snapshot)
+Order    ──< Payment
+Category ──< Category       (self-ref: parent)
+Category ──< Product
+Brand    ──< Product
+Product  ──< Variant
+Product  ──< Review >── User
+Coupon   (مستقل، Order يشاور عليه)
 ```
-
-### Embed ولا Reference؟
 
 | العلاقة | القرار | السبب |
 |---|---|---|
-| User → Addresses | **Embed** | عددها قليل وبتتقري مع اليوزر |
-| Order → Items | **Embed + Snapshot** | لازم تفضل زي ما كانت وقت الشراء |
-| Product → Variants | **Reference** | كتير ولها سعر ومخزون لوحدها |
-| Product → Reviews | **Reference** | ممكن توصل آلاف |
-| Order → Payment | **Reference** | محاولات دفع متعددة |
-| Category → Parent | **Self-reference** | شجرة بمستويات غير محددة |
+| User → Addresses | Embed | قليلة وبتتقري مع اليوزر |
+| Order → Items | Embed + Snapshot | تفضل زي وقت الشراء |
+| Product → Variants | Reference | لكل واحد سعر ومخزون |
+| Product → Reviews | Reference | ممكن توصل آلاف |
+| Order → Payment | Reference | محاولات دفع متعددة |
+| Category → Parent | Self-ref | شجرة غير محدودة |
 
-### الـ Schemas الأساسية
+---
+
+## 4) الـ Schemas
 
 ```js
-// User
-{
-  name, email: { unique }, password: { select: false },
-  role: { enum: ['customer', 'admin'], default: 'customer' },
-  addresses: [{ alias, details, phone, city, postalCode }],  // _id تلقائي
-  wishlist: [{ ref: 'Product' }]
-}
+User     { name, email:unique, password:select:false, role:['customer','admin'],
+           addresses:[{ alias, details, phone, city, postalCode }],
+           wishlist:[ref Product] }          // سقف 100
 
-// Category
-{
-  name, slug: { unique },
-  parent: { ref: 'Category', default: null },
-  ancestors: [{ ref: 'Category', index: true }]   // لجلب كل الأحفاد بسهولة
-}
+Category { name, slug:unique, parent:ref Category|null, ancestors:[ref Category]:index }
 
-// Product
-{
-  name, slug: { unique }, description,
-  category: { ref: 'Category', index: true },
-  brand, images: [String],
-  ratingAvg, ratingCount,        // denormalized للسرعة
-  isActive                       // soft delete
-}
+Brand    { name:unique, slug:unique, image }
 
-// Variant
-{
-  product: { ref: 'Product', index: true },
-  sku: { unique },               // كود فريد لكل variant
-  attributes: { color, size },   // أو [{ name, value }] لو الأنواع متنوعة
-  price, stock: { min: 0 }
-}
+Product  { name, slug:unique, description, category:ref:index, brand:ref,
+           images:[String], ratingAvg, ratingCount, isActive,
+           minPrice, maxPrice }              // denormalized من الـ variants
 
-// Cart
-{ user: { ref: 'User', unique }, items: [{ variant, quantity }] }
+Variant  { product:ref:index, sku:unique, attributes:{ color, size },
+           price (قرش/سنت، integer), stock:min 0, isActive }
 
-// Order
-{
-  user: { index }, items: [{ variant, name, price, quantity }],   // snapshot
-  shippingAddress: { ... },                                       // snapshot
-  subtotal, discount, shippingFee, total, coupon,
-  status: { enum: [pending, paid, shipped, delivered, cancelled, refunded], index }
-}
+Cart     { user:ref:unique, items:[{ variant, quantity }] }
 
-// Payment
-{ order: { index }, method, status, amount, transactionId }
+Order    { user:index, items:[{ variant, name, price, quantity }],     // snapshot
+           shippingAddress:{...},                                       // snapshot
+           subtotal, discount, shippingFee, total (كلها integers), coupon,
+           status:[pending, paid, shipped, delivered, cancelled, refunded]:index }
 
-// Review
-{ product: { index }, user, rating: 1..5, comment }
-// + unique compound index على (product, user)
+Payment  { order:index, method, status, amount, transactionId }
 
-// Coupon
-{ code: { unique }, type: ['percent','fixed'], value, minOrder, expiresAt, usageLimit, usedCount }
+Review   { product:index, user, rating:1..5, comment }   // unique (product, user)
+
+Coupon   { code:unique, type:['percent','fixed'], value, minOrder,
+           expiresAt, usageLimit, usedCount }
 ```
 
 ---
 
-## 4) الـ API
+## 5) الـ API
+
+| Resource | Endpoint | Access |
+|---|---|---|
+| **Auth** | `POST /auth/register` · `POST /auth/login` | public |
+| | `PATCH /users/me/password` | user |
+| **Me** | `GET/PATCH /users/me` | user |
+| **Addresses** | `POST /users/me/addresses` · `PATCH/DELETE /users/me/addresses/:id` | user |
+| **Categories** | `GET /categories` · `GET /categories/:id` | public |
+| | `POST /categories` · `PATCH/DELETE /categories/:id` | admin |
+| **Brands** | `GET /brands` · `GET /brands/:id` | public |
+| | `POST /brands` · `PATCH/DELETE /brands/:id` | admin |
+| **Products** | `GET /products?category=&brand=&minPrice=&maxPrice=&search=&sort=&page=&limit=` | public |
+| | `GET /products/:id` | public |
+| | `POST /products` · `PATCH /products/:id` · `DELETE /products/:id` (soft) | admin |
+| **Variants** | `GET /products/:productId/variants` | public |
+| | `POST /products/:productId/variants` · `PATCH/DELETE /variants/:id` | admin |
+| **Cart** | `GET /cart` · `POST /cart/items` · `PATCH/DELETE /cart/items/:variantId` · `DELETE /cart` | user |
+| **Orders** | `POST /orders` · `GET /orders` · `GET /orders/:id` · `PATCH /orders/:id/cancel` | user |
+| | `GET /admin/orders` · `PATCH /admin/orders/:id/status` | admin |
+| **Reviews** | `GET /products/:productId/reviews` | public |
+| | `POST /products/:productId/reviews` | user |
+| | `PATCH/DELETE /reviews/:id` | owner / admin |
+| **Wishlist** | `POST/DELETE /wishlist/:productId` | user |
+| **Coupons** | `POST /coupons/validate` | user |
+
+---
+
+## 6) هيكل المشروع
 
 ```
-── Auth ──────────────────────────────────────
-POST   /auth/register
-POST   /auth/login
-GET    /users/me
-PATCH  /users/me
-POST   /users/me/addresses
-PATCH  /users/me/addresses/:addressId
-DELETE /users/me/addresses/:addressId
-
-── Categories ────────────────────────────────
-GET    /categories                 (public)
-GET    /categories/:id             (public)
-POST   /categories                 (admin)
-PATCH  /categories/:id             (admin)
-DELETE /categories/:id             (admin)
-
-── Products ──────────────────────────────────
-GET    /products                   (public: ?category=&minPrice=&maxPrice=&sort=&page=&limit=&search=)
-GET    /products/:id               (public)
-POST   /products                   (admin)
-PATCH  /products/:id               (admin)
-DELETE /products/:id               (admin → soft delete)
-
-── Variants ──────────────────────────────────
-GET    /products/:productId/variants
-POST   /products/:productId/variants   (admin)
-PATCH  /variants/:id                   (admin)
-DELETE /variants/:id                   (admin)
-
-── Cart ──────────────────────────────────────
-GET    /cart
-POST   /cart/items
-PATCH  /cart/items/:variantId
-DELETE /cart/items/:variantId
-DELETE /cart
-
-── Orders ────────────────────────────────────
-POST   /orders                     (من الكارت)
-GET    /orders                     (طلباتي)
-GET    /orders/:id
-PATCH  /orders/:id/cancel
-GET    /admin/orders               (admin)
-PATCH  /admin/orders/:id/status    (admin)
-
-── Reviews / Wishlist / Coupons ──────────────
-GET    /products/:productId/reviews
-POST   /products/:productId/reviews
-POST   /wishlist/:productId
-DELETE /wishlist/:productId
-POST   /coupons/validate
+app.js
+config/       connectDB.js
+models/       *.model.js
+controllers/  *.controller.js
+routes/       *.route.js + index.js
+middleware/   protect, restrictTo, validate, errorHandler, upload
+utils/        AppError, catchAsync, apiFeatures, validation/
 ```
 
 ---
 
-## 5) هيكل المشروع
+## 7) ترتيب البناء
 
-```
-ecommerce-api/
-├── config/        db.js, env.js
-├── models/        user, category, product, variant, cart, order, payment, review, coupon
-├── controllers/   auth, user, category, product, variant, cart, order, review ...
-├── routes/        نفس الأسماء
-├── middlewares/   auth.js (protect), role.js (restrictTo), validate.js, errorHandler.js, upload.js
-├── utils/         ApiError, catchAsync, apiFeatures (filter/sort/paginate)
-├── .env
-└── app.js
-```
-
----
-
-## 6) ترتيب البناء
-
-| # | المرحلة | تفاصيل | جرّبي قبل ما تكملي |
-|---|---|---|---|
-| 1 | **Setup** | Express، DB، env، error handler | السيرفر يشتغل ويتصل |
-| 2 | **Auth** | register/login، bcrypt، JWT، `protect`، `restrictTo('admin')` | تسجيل ودخول وحماية route |
-| 3 | **User profile + Addresses** | me، CRUD للعناوين | إضافة وتعديل ومسح عنوان |
-| 4 | **Category** | CRUD + parent + ancestors | شجرة من 3 مستويات |
-| 5 | **Product + Variant** | CRUD، slug، filters، pagination، search، sort | فلترة وصفحات صح |
-| 6 | **رفع الصور** | Multer + Cloudinary | صورة تترفع ويتحفظ لينكها |
-| 7 | **Cart** | إضافة/تعديل/مسح، التحقق من المخزون | كمية أكبر من المخزون ترفض |
-| 8 | **Order** | إنشاء من الكارت داخل **transaction** | مخزون ينقص وكارت يفضى |
-| 9 | **Payment** | في البداية COD، بعدين بوابة دفع | تغيير status الأوردر |
-| 10 | **Reviews + Wishlist + Coupon** | وتحديث `ratingAvg` | حساب المتوسط صح |
-| 11 | **Admin dashboard endpoints** | إحصائيات وإدارة الأوردرات | |
-| 12 | **Tests + Swagger + Deploy** | | |
+| # | المرحلة | اختبار النجاح |
+|---|---|---|
+| 1 | Setup: Express، DB، env، error handler | السيرفر شغال ومتصل |
+| 2 | Auth: bcrypt، JWT، `protect`، `restrictTo` | route محمي يرفض بدون token |
+| 3 | Profile + Addresses | CRUD للعناوين |
+| 4 | Category (parent + ancestors) | شجرة 3 مستويات |
+| 5 | Brand | CRUD |
+| 6 | Product + Variant (slug، filter، sort، pagination، search) | فلترة وصفحات صح |
+| 7 | رفع الصور (Multer + Cloudinary) | اللينك يتحفظ |
+| 8 | Cart + التحقق من المخزون | كمية > stock تترفض |
+| 9 | Coupon (قبل الأوردر لأنه بيستخدمه) | validate صح (منتهي / حد أقصى / minOrder) |
+| 10 | Order (transaction) | stock ينقص والكارت يفضى، والإلغاء يرجّع المخزون |
+| 11 | Payment (COD ← gateway) | status الأوردر يتغير |
+| 12 | Reviews + Wishlist | `ratingAvg` صح |
+| 13 | Admin stats | — |
+| 14 | Tests + Swagger + Deploy | رابط شغال |
 
 ---
 
-## 7) المنطق الحساس (انتبهي له)
+## 8) المنطق الحساس
 
-### إنشاء الأوردر (Transaction إجباري)
+### إنشاء الأوردر
 
 ```
 1. اقري الكارت
-2. لكل item:
-   - تأكدي إن الـ variant موجود ومتاح (isActive)
-   - تأكدي إن stock >= quantity
-   - انسخي الاسم والسعر الحالي (snapshot) — السعر من الـ DB مش من الـ client!
-3. طبّقي الكوبون (لو صالح: مش منتهي، usedCount < usageLimit، minOrder)
-4. احسبي subtotal / discount / shippingFee / total  ← في الـ backend
-5. داخل transaction:
-   - نقّصي المخزون: updateOne({ _id, stock: { $gte: qty } }, { $inc: { stock: -qty } })
-   - أنشئي الأوردر
-   - زوّدي usedCount للكوبون
+2. لكل item: variant موجود + isActive + stock >= qty
+   → snapshot (name, price من الـ DB مش من الـ client)
+3. الكوبون: مش منتهي + usedCount < usageLimit + subtotal >= minOrder
+4. احسبي subtotal / discount / shippingFee / total في الـ backend
+5. Transaction:
+   - updateOne({ _id, stock: { $gte: qty } }, { $inc: { stock: -qty } })
+   - create Order
+   - coupon.usedCount++
    - فضّي الكارت
 ```
 
-> التحقق `stock: { $gte: qty }` جوه الـ update نفسه بيمنع إن اتنين يشتروا آخر قطعة في نفس اللحظة.
+> الـ Transaction محتاجة MongoDB **replica set** (Atlas أو local replica set)، مش بتشتغل على standalone.
 
-### حالات الأوردر (State machine)
+> شرط `stock: { $gte: qty }` جوه الـ update يمنع اتنين يشتروا آخر قطعة في نفس اللحظة.
+
+### حالات الأوردر
 
 ```
 pending → paid → shipped → delivered
@@ -237,74 +183,75 @@ pending → paid → shipped → delivered
 cancelled  refunded
 ```
 
-متسمحيش بالقفز من حالة لحالة غير منطقية (delivered → pending).
+ممنوع أي انتقال غير ده.
+
+- **الإلغاء:** بيرجّع المخزون (`$inc: +qty`) وبيرجّع `usedCount` للكوبون، كله في transaction.
+- أوردر `pending` بدفع أونلاين ومادفعش بعد مدة ← يتلغى تلقائياً ويرجّع المخزون.
+- الإلغاء من الـ customer مسموح في `pending` بس.
+
+### السعر في الـ Product
+السعر في الـ Variant، فالفلترة بـ `minPrice/maxPrice` على Product تحتاج `minPrice` و`maxPrice` محفوظين في الـ Product. حدّثيهم كل ما variant يتضاف/يتعدل/يتمسح.
 
 ### Reviews
-- يوزر = review واحد للمنتج (unique compound index).
-- بعد إضافة/حذف review حدّثي `ratingAvg` و `ratingCount` في المنتج.
-- (تحسين) اسمحي بالـ review لمن اشترى المنتج فعلاً.
+
+- review واحد لكل (user, product).
+- بعد add/update/delete ← أعيدي حساب `ratingAvg` و `ratingCount` (aggregation أضمن من الزيادة اليدوية).
+- (تحسين) بس اللي اشترى المنتج.
 
 ---
 
-## 8) قواعد لازم تفضل في بالك
+## 9) القواعد
 
-1. **لا تثقي في الـ client أبداً:** السعر والمجموع والخصم يتحسبوا في الـ backend.
-2. **Snapshot** في الأوردرات (الاسم، السعر، العنوان).
-3. **Soft delete** للمنتجات (`isActive: false`) عشان الأوردرات القديمة متتكسرش.
-4. **Indexes** على: `slug`, `category`, `user`, `status`, `product`, `sku`.
-5. **كل route لازم يتحدد:** public / user / admin.
-6. **متحطيش** `password` في أي response (`select: false`).
-7. **Pagination** إجباري في أي list (products, orders, reviews).
-8. **Validation** لكل input (Joi/Zod) قبل ما يوصل للـ controller.
-9. **Transactions** لأي عملية فيها أكتر من collection.
+1. الـ client مش مصدر للسعر أو المجموع أو الخصم.
+2. Snapshot في الأوردر (اسم، سعر، عنوان).
+3. Soft delete للمنتجات (`isActive: false`).
+4. Indexes: `slug`, `category`, `brand`, `user`, `status`, `product`, `sku`.
+5. كل route متحدد: public / user / admin.
+6. `password` مايظهرش في أي response.
+7. Pagination في أي list.
+8. Validation (Joi/Zod) قبل الـ controller.
+9. Transaction لأي عملية على أكتر من collection.
+10. `helmet` + `cors` + rate limit.
+11. **الملكية:** `GET/PATCH /orders/:id` و`/cart` و`/reviews/:id` لازم تتأكد إن الداتا بتاعة اليوزر.
+12. **Mass assignment:** `register` ما يقبلش `role`، والـ product/order ما يقبلوش `price` أو `status` من الـ body.
+13. **Category:** ممنوع مسحها لو فيها products أو children.
+14. الأرقام المالية integers (أصغر وحدة).
 
 ---
 
-## 9) Checklist للمشروع
+## 10) Checklist
 
-### Setup
+**Setup**
 - [ ] `.env` + `.gitignore`
 - [ ] DB connection
 - [ ] Error handler موحد
-- [ ] `helmet` + `cors` + rate limit
+- [ ] helmet + cors + rate limit
 
-### Features
+**Features**
 - [ ] Auth + roles
 - [ ] Addresses
-- [ ] Categories (شجرة)
-- [ ] Products + Variants + filters + pagination + search
+- [ ] Categories
+- [ ] Brands
+- [ ] Products + Variants
 - [ ] رفع الصور
 - [ ] Cart
-- [ ] Orders (transaction)
+- [ ] Orders
 - [ ] Payment
-- [ ] Reviews + ratingAvg
+- [ ] Reviews
 - [ ] Wishlist
 - [ ] Coupons
 
-### الجودة
-- [ ] Tests للـ flows المهمة (auth، order)
+**Quality**
+- [ ] Tests (auth، order)
 - [ ] Swagger
-- [ ] README للمشروع
-- [ ] Deploy + رابط شغال
+- [ ] README
+- [ ] Deploy
 
 ---
 
-## 10) أفكار للتوسع بعدين
+## 11) المراجع
 
-- **Brand** model بدل `brand: String`.
-- **Shipment** (أكتر من شحنة للأوردر) و **Return/Refund**.
-- **Attribute** model لتعريف خصائص كل تصنيف ديناميكياً.
-- **Warehouse + Inventory** لو أكتر من مخزن.
-- **Vendor** لو multi-vendor.
-- **Notifications** و **AuditLog**.
-- **Redis** للـ caching والـ sessions.
-- **Elasticsearch** لو الـ search بقى ثقيل.
-
----
-
-## 11) مصادر للرجوع لها
-
-- Mongoose Docs: https://mongoosejs.com/docs/
-- Express Docs: https://expressjs.com/
-- MongoDB Manual (Indexes, Transactions): https://www.mongodb.com/docs/manual/
+- Mongoose: https://mongoosejs.com/docs/
+- Express: https://expressjs.com/
+- MongoDB (Indexes, Transactions): https://www.mongodb.com/docs/manual/
 - JWT: https://jwt.io/introduction
